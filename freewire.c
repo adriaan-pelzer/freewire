@@ -13,33 +13,20 @@
 #include "freewire_write.pio.h"
 #include "freewire_read.pio.h"
 
-uint32_t shared_value[2] = { 0, 0 };
-uint32_t shared_value_idx = 0;
+uint32_t shared_value;
 
 typedef enum {
   STATE_START = 0,
-  STATE_INIT,
-  STATE_RECV
+  STATE_RUN
 } state_t;
 
 typedef struct {
   state_t state;
-  uint32_t active;
-  uint32_t bins[32];
-  uint32_t values[32];
-  uint32_t bin_index;
   uint32_t prev;
-  uint32_t half_period;
-  uint32_t qtr_period;
+  uint32_t ones[32];
+  uint32_t zeros[32];
+  uint32_t index;
 } count_t;
-
-uint32_t convert_count(count_t *counter) {
-  uint32_t ret = 0;
-  for (uint32_t i = 0; i < 32; i++) {
-    ret = ret | (counter->values[i] << (31 - i));
-  }
-  return ret;
-}
 
 uint32_t pop_bit(uint32_t *value) {
   uint32_t ret = ((*value) >> 31) & 1;
@@ -47,46 +34,68 @@ uint32_t pop_bit(uint32_t *value) {
   return ret;
 }
 
-void set_period(count_t *counter, uint32_t period) {
-  counter->half_period = period / 2;
-  counter->half_period = counter->half_period == 0 ? 1 : counter->half_period;
-  counter->qtr_period = period / 4;
-  counter->qtr_period = counter->qtr_period == 0 ? 1 : counter->qtr_period;
+void display_counter(count_t *counter) {
+  for (uint32_t i = 0; i < 32; i++) {
+    printf("%u: %u %u\n", i, counter->ones[i], counter->zeros[i]);
+  }
+}
+
+uint32_t counter_value(count_t *counter) {
+  uint32_t ret = 0;
+  for (uint32_t i = 0; i < 32; i++) {
+    if (counter->ones[i] > counter->zeros[i]) {
+      ret |= (1 << (31 - i));
+    }
+  }
+  return ret;
 }
 
 void process_value(count_t *counter, uint32_t value) {
   for (uint32_t i = 0; i < 32; i++) {
     uint32_t bit = pop_bit(&value);
 
-    if (counter->state == STATE_RECV) {
-      if (counter->bins[counter->bin_index] == counter->qtr_period) {
-        counter->values[counter->bin_index] = bit;
-      }
-      if (counter->bins[counter->bin_index] == counter->half_period) {
-        counter->bin_index++;
-        if (counter->bin_index == 32) {
-          shared_value[shared_value_idx] = convert_count(counter);
-          memset(counter, 0, sizeof(count_t));
+    switch (counter->state) {
+      case STATE_START:
+        if (bit == 0) {
+          counter->zeros[0]++;
+        } else {
+          if (counter->zeros[0] > 1024) {
+            counter->state = STATE_RUN;
+            counter->index = 0;
+            counter->ones[counter->index] = 1;
+          } else {
+            counter->zeros[0] = 0;
+          }
         }
-      }
-    } else {
-      if (counter->state == STATE_START) {
-        if (bit == 1 && counter->bins[0] > 1024) {
-          shared_value_idx = 0;
-          counter->state = STATE_INIT;
-          counter->bins[0] = 1;
+        break;
+      case STATE_RUN:
+        if (bit != counter->prev) {
+          if (bit == 1) {
+            counter->index++;
+            if (counter->index == 32) {
+              counter->index = 0;
+            }
+            counter->ones[counter->index] = 0;
+          } else {
+            counter->zeros[counter->index] = 0;
+          }
         }
-      } else if (bit != counter->prev) {
-        counter->values[counter->bin_index] = counter->prev;
-        counter->bin_index++;
-        if (counter->bin_index == 2) {
-          counter->state = STATE_RECV;
-          set_period(counter, counter->bins[0] + counter->bins[1]);
+        if (bit == 1) {
+          counter->ones[counter->index]++;
+        } else {
+          counter->zeros[counter->index]++;
+          if (counter->zeros[counter->index] > 1024) {
+            counter->zeros[counter->index] = (counter->zeros[0] + counter->ones[0]) - counter->ones[counter->index];
+            counter->state = STATE_START;
+            shared_value = counter_value(counter);
+            //display_counter(counter);
+            counter->zeros[0] = 0;
+            counter->index = 0;
+          }
         }
-      }
+        break;
     }
 
-    counter->bins[counter->bin_index]++;
     counter->prev = bit;
   }
 }
@@ -108,8 +117,7 @@ void core_one(void) {
   freewire_read_program_init(pio, sm1, offset, 5);
 
   while (true) {
-    uint32_t value = pio_sm_get_blocking(pio, sm1);
-    process_value(&counter, value);
+    process_value(&counter, pio_sm_get_blocking(pio, sm1));
   }
 }
 
@@ -144,16 +152,16 @@ int main() {
     num = num | (1 << 29);
     num = num & 0xbfffffff;
     pio_sm_put_blocking(pio, sm0, num);
-    pio_sm_put_blocking(pio, sm0, 0x00000000);
-    sleep_ms(5);
-    if (num != shared_value[0]) {
-      printf("\n *** num mismatch: %u != %u\n", num, shared_value[0]);
+    sleep_ms(8);
+    if (num != shared_value) {
+      printf("!!! %u != %u\n", num, shared_value);
     } else {
       printf(".");
-      if (count++ == 32) {
-        printf("\n");
-        count = 0;
-      }
+    }
+    count++;
+    if (count == 32) {
+      printf("\n");
+      count = 0;
     }
   }
 }
