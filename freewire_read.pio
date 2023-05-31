@@ -1,0 +1,19 @@
+.program freewire_read
+.wrap_target
+  in pins 1
+.wrap
+
+% c-sdk {
+static inline void freewire_read_program_init(PIO pio, uint sm, uint offset, uint pin) {
+  float clock_divider = (float) clock_get_hz(clk_sys) / 1000000.0f;
+
+  pio_gpio_init(pio, pin);
+  pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, false);
+  pio_sm_config c = freewire_read_program_get_default_config(offset);
+  sm_config_set_in_pins(&c, pin);
+  sm_config_set_in_shift(&c, false, true, 32);
+  sm_config_set_clkdiv(&c, clock_divider);
+  pio_sm_init(pio, sm, offset, &c);
+  pio_sm_set_enabled(pio, sm, true);
+}
+%}

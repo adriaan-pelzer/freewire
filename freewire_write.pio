@@ -1,0 +1,21 @@
+.program freewire_write
+.wrap_target
+  out pins 1 [30]
+.wrap
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void freewire_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+  float clock_divider = (float) clock_get_hz(clk_sys) / 1000000.0f;
+
+  pio_gpio_init(pio, pin);
+  pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);
+  pio_sm_config c = freewire_write_program_get_default_config(offset);
+  sm_config_set_out_pins(&c, pin, 1);
+  sm_config_set_out_shift(&c, false, true, 32);
+  sm_config_set_clkdiv(&c, clock_divider);
+  pio_sm_init(pio, sm, offset, &c);
+  pio_sm_set_enabled(pio, sm, true);
+}
+%}
