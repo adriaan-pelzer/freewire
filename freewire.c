@@ -13,15 +13,24 @@
 #include "freewire_write.pio.h"
 #include "freewire_read.pio.h"
 
-uint32_t shared_value = 0;
+uint32_t shared_value[2] = { 0, 0 };
+uint32_t shared_value_idx = 0;
+
+typedef enum {
+  STATE_START = 0,
+  STATE_INIT,
+  STATE_RECV
+} state_t;
 
 typedef struct {
+  state_t state;
   uint32_t active;
   uint32_t bins[32];
   uint32_t values[32];
   uint32_t bin_index;
   uint32_t prev;
-  uint32_t period;
+  uint32_t half_period;
+  uint32_t qtr_period;
 } count_t;
 
 uint32_t convert_count(count_t *counter) {
@@ -38,41 +47,48 @@ uint32_t pop_bit(uint32_t *value) {
   return ret;
 }
 
-void count_bits(count_t *counter, uint32_t bit) {
-  if (counter->period > 0) {
-    if (counter->bins[counter->bin_index] == counter->period / 4) {
-      counter->values[counter->bin_index] = bit;
-    }
-    if (counter->bins[counter->bin_index] == counter->period / 2) {
-      counter->bin_index++;
-      if (counter->bin_index == 32) {
-        shared_value = convert_count(counter);
-        memset(counter, 0, sizeof(count_t));
+void set_period(count_t *counter, uint32_t period) {
+  counter->half_period = period / 2;
+  counter->half_period = counter->half_period == 0 ? 1 : counter->half_period;
+  counter->qtr_period = period / 4;
+  counter->qtr_period = counter->qtr_period == 0 ? 1 : counter->qtr_period;
+}
+
+void process_value(count_t *counter, uint32_t value) {
+  for (uint32_t i = 0; i < 32; i++) {
+    uint32_t bit = pop_bit(&value);
+
+    if (counter->state == STATE_RECV) {
+      if (counter->bins[counter->bin_index] == counter->qtr_period) {
+        counter->values[counter->bin_index] = bit;
       }
-    }
-    counter->bins[counter->bin_index]++;
-    return;
-  }
-  if (counter->active == 0) {
-    if (bit == 0) {
-      counter->bins[0]++;
+      if (counter->bins[counter->bin_index] == counter->half_period) {
+        counter->bin_index++;
+        if (counter->bin_index == 32) {
+          shared_value[shared_value_idx] = convert_count(counter);
+          memset(counter, 0, sizeof(count_t));
+        }
+      }
     } else {
-      if (counter->bins[0] > 1024) {
-        counter->active = 1;
-        counter->bins[0] = 1;
+      if (counter->state == STATE_START) {
+        if (bit == 1 && counter->bins[0] > 1024) {
+          shared_value_idx = 0;
+          counter->state = STATE_INIT;
+          counter->bins[0] = 1;
+        }
+      } else if (bit != counter->prev) {
+        counter->values[counter->bin_index] = counter->prev;
+        counter->bin_index++;
+        if (counter->bin_index == 2) {
+          counter->state = STATE_RECV;
+          set_period(counter, counter->bins[0] + counter->bins[1]);
+        }
       }
     }
-  } else {
-    if (bit != counter->prev) {
-      counter->values[counter->bin_index] = counter->prev;
-      counter->bin_index++;
-      if (counter->bin_index == 2) {
-        counter->period = counter->bins[0] + counter->bins[1];
-      }
-    }
+
     counter->bins[counter->bin_index]++;
+    counter->prev = bit;
   }
-  counter->prev = bit;
 }
 
 void core_one(void) {
@@ -93,9 +109,7 @@ void core_one(void) {
 
   while (true) {
     uint32_t value = pio_sm_get_blocking(pio, sm1);
-    for (uint32_t i = 0; i < 32; i++) {
-      count_bits(&counter, pop_bit(&value));
-    }
+    process_value(&counter, value);
   }
 }
 
@@ -113,7 +127,7 @@ int main() {
   printf("Loaded program at %d [core 0]\n", offset);
 
   multicore_reset_core1();
-  sleep_ms(2000);
+  sleep_ms(100);
   multicore_launch_core1(core_one);
 
   multicore_fifo_push_blocking((uint32_t) pio);
@@ -121,16 +135,19 @@ int main() {
 
   freewire_write_program_init(pio, sm0, offset, 2);
 
+  sleep_ms(100);
+
   while (true) {
     uint32_t num = (uint32_t) rand();
+
     num = num | (1 << 31);
     num = num | (1 << 29);
     num = num & 0xbfffffff;
     pio_sm_put_blocking(pio, sm0, num);
     pio_sm_put_blocking(pio, sm0, 0x00000000);
-    sleep_ms(1000);
-    if (num != shared_value) {
-      printf("\n *** mismatch: %u != %u\n", num, shared_value);
+    sleep_ms(5);
+    if (num != shared_value[0]) {
+      printf("\n *** num mismatch: %u != %u\n", num, shared_value[0]);
     } else {
       printf(".");
       if (count++ == 32) {

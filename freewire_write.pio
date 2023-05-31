@@ -1,6 +1,6 @@
 .program freewire_write
 .wrap_target
-  out pins 1 [30]
+  out pins 1 [31]
 .wrap
 
 % c-sdk {
