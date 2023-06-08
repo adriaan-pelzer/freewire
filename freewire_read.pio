@@ -1,6 +1,45 @@
 .program freewire_read
+
 .wrap_target
-  in pins 1
+
+_check_initial_digit:
+  jmp pin _read_one
+  jmp _read_zero
+
+_read_one:
+  set x 31
+_decrement_one:
+  jmp x-- _next_one
+_next_one:
+  ;nop
+  jmp pin _decrement_one
+
+_send_one:
+  mov isr x
+  push
+
+_read_zero:
+  set y 15
+  ;nop
+_decrement_zero:
+  jmp y-- _next_zero
+
+_send_end:
+  mov isr y
+  push
+
+_wait_one:
+  wait 1 pin 0
+  jmp _read_one
+
+_next_zero:
+  jmp pin _send_zero
+  jmp _decrement_zero
+
+_send_zero:
+  mov isr y
+  push
+
 .wrap
 
 % c-sdk {

@@ -1,7 +1,7 @@
 .program freewire_write
 .side_set 1
 
-.define public T1 3
+.define public T1 15
 
 .wrap_target
 bitloop:

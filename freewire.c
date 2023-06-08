@@ -10,102 +10,28 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "pico/multicore.h"
+
 #include "freewire_write.pio.h"
 #include "freewire_read.pio.h"
+#include "freewire_word.h"
 
-uint32_t shared_value;
+#define NUM_WORDS 100
 
-typedef enum {
-  STATE_START = 0,
-  STATE_RUN
-} state_t;
-
-typedef struct {
-  state_t state;
-  uint32_t prev;
-  uint32_t ones[32];
-  uint32_t zeros[32];
-  uint32_t index;
-} count_t;
-
-uint32_t pop_bit(uint32_t *value) {
-  uint32_t ret = ((*value) >> 31) & 1;
-  *value = ((*value) << 1) & 0xfffffffe;
-  return ret;
-}
-
-void display_counter(count_t *counter) {
+void print_binary(uint32_t value) {
   for (uint32_t i = 0; i < 32; i++) {
-    printf("%u: %u %u\n", i, counter->ones[i], counter->zeros[i]);
+    printf("%u", (value >> (31 - i)) & 1);
   }
 }
 
-uint32_t counter_value(count_t *counter) {
-  uint32_t ret = 0;
-  for (uint32_t i = 0; i < 32; i++) {
-    if (counter->ones[i] > counter->zeros[i]) {
-      ret |= (1 << (31 - i));
-    }
-  }
-  return ret;
-}
-
-void process_value(count_t *counter, uint32_t value) {
-  for (uint32_t i = 0; i < 32; i++) {
-    uint32_t bit = pop_bit(&value);
-
-    switch (counter->state) {
-      case STATE_START:
-        if (bit == 0) {
-          counter->zeros[0]++;
-        } else {
-          if (counter->zeros[0] > 1024) {
-            counter->state = STATE_RUN;
-            counter->index = 0;
-            counter->ones[counter->index] = 1;
-          } else {
-            counter->zeros[0] = 0;
-          }
-        }
-        break;
-      case STATE_RUN:
-        if (bit != counter->prev) {
-          if (bit == 1) {
-            counter->index++;
-            if (counter->index == 32) {
-              counter->index = 0;
-            }
-            counter->ones[counter->index] = 0;
-          } else {
-            counter->zeros[counter->index] = 0;
-          }
-        }
-        if (bit == 1) {
-          counter->ones[counter->index]++;
-        } else {
-          counter->zeros[counter->index]++;
-          if (counter->zeros[counter->index] > 1024) {
-            counter->zeros[counter->index] = (counter->zeros[0] + counter->ones[0]) - counter->ones[counter->index];
-            counter->state = STATE_START;
-            shared_value = counter_value(counter);
-            //display_counter(counter);
-            counter->zeros[0] = 0;
-            counter->index = 0;
-          }
-        }
-        break;
-    }
-
-    counter->prev = bit;
-  }
-}
+uint32_t values[NUM_WORDS];
+uint32_t value_index = 0;
 
 void core_one(void) {
   PIO pio = (PIO) multicore_fifo_pop_blocking();
   int sm1 = (int) multicore_fifo_pop_blocking();
-  count_t counter;
+  fw_word_t fw_word;
 
-  memset(&counter, 0, sizeof(count_t));
+  memset(&fw_word, 0, sizeof(fw_word_t));
 
   printf("pio [core 1]: %p\n", pio);
   printf("sm1 [core 1]: %i\n", sm1);
@@ -117,8 +43,18 @@ void core_one(void) {
   freewire_read_program_init(pio, sm1, offset, 5);
 
   while (true) {
-    process_value(&counter, pio_sm_get_blocking(pio, sm1));
+    if (fw_word_take_reading(&fw_word, pio_sm_get_blocking(pio, sm1))) {
+      values[value_index] = fw_word.value;
+      if (value_index++ == (NUM_WORDS - 1)) {
+        value_index = 0;
+        memset(&fw_word, 0, sizeof(fw_word_t));
+      }
+    }
   }
+}
+
+uint32_t _random() {
+  return (uint32_t)((rand() << 1) | (rand() & 1));
 }
 
 int main() {
@@ -146,22 +82,25 @@ int main() {
   sleep_ms(100);
 
   while (true) {
-    uint32_t num = (uint32_t) rand();
+    if (1) {
+      uint32_t num[NUM_WORDS];
 
-    num = num | (1 << 31);
-    num = num | (1 << 29);
-    num = num & 0xbfffffff;
-    pio_sm_put_blocking(pio, sm0, num);
-    sleep_ms(8);
-    if (num != shared_value) {
-      printf("!!! %u != %u\n", num, shared_value);
-    } else {
-      printf(".");
-    }
-    count++;
-    if (count == 32) {
-      printf("\n");
-      count = 0;
+      for (uint32_t i = 0; i < NUM_WORDS; i++) {
+        num[i] = _random();
+        pio_sm_put_blocking(pio, sm0, num[i]);
+      }
+
+      sleep_ms(20);
+      for (uint32_t i = 0; i < NUM_WORDS; i++) {
+        if (num[i] == values[i]) {
+          printf(".");
+        } else {
+          printf("X");
+        }
+        if (count++ % 80 == 79) {
+          printf("\n");
+        }
+      }
     }
   }
 }
