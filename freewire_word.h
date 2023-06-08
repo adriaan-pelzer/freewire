@@ -11,6 +11,9 @@ typedef struct {
   uint32_t stale;
 } fw_word_t;
 
+fw_word_t *fw_word_create();
 uint32_t fw_word_take_reading(fw_word_t *ctx, uint32_t reading);
+uint32_t fw_word_get_value(fw_word_t *ctx);
+void fw_word_destroy(fw_word_t *ctx);
 
 #endif // _FREEWIRE_WORD_H_
