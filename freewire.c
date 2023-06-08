@@ -104,7 +104,7 @@ int main() {
       }
       pio_sm_put_blocking(pio, sm0, sent_message->checksum);
 
-      sleep_ms(10);
+      sleep_ms(100);
 
       if (sent_message->length != message->length) {
         printf("L");
